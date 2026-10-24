@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>rappu — Interactive 3D Portfolio Book</title>
+  <meta name="description" content="Physical-meets-digital 3D interactive book portfolio with tactile paper curvature physics, studio lighting, and spatial UX case studies.">
+  
+  <!-- Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- 3D Canvas Host -->
+  <div id="canvas-container"></div>
+
+  <!-- Atmospheric Peripheral Edge Vignette -->
+  <div id="vignette-overlay"></div>
+
+
+
+  <!-- Seamless Loading State -->
+  <div id="loading-overlay">
+    <div class="loader-spinner"></div>
+    <div class="loader-text">INITIALIZING 3D ENVIRONMENT</div>
+  </div>
+
+  <!-- Floating UI Interface Layer -->
+  <div class="ui-layer">
+    <!-- Top Navigation Bar -->
+    <header class="top-bar">
+      <div class="brand">
+        <div class="brand-logo">
+          <span>rappu</span>
+          <span class="brand-dot"></span>
+        </div>
+      </div>
+
+      <!-- Action Toggles -->
+      <div class="top-actions">
+        <button id="btn-sound" class="icon-btn" aria-label="Toggle Paper Turn Sound" title="Sound Effects">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path class="sound-wave" d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+
+  </div>
+
+  <!-- CDN Core Libraries: Three.js r128 & GSAP 3.12.5 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+  <!-- Application Modules -->
+  <script src="js/audio.js"></script>
+  <script src="js/pageTextures.js"></script>
+  <script src="js/book.js"></script>
+  <script src="js/desk.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
