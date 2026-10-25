@@ -1,8 +1,10 @@
 /**
- * Main WebGL Application & In-Page Interactive Landing Page Orchestrator
- * Integrates Three.js Scene, Studio Lighting, Dynamic Canvas UV Raycasting,
- * Interactive Mechanical Keypad, and Camera Parallax.
+ * rappu — Orquestrador principal
+ * Cena Three.js, câmera que enquadra o livro automaticamente, abertura da capa,
+ * raycasting em UV para interagir com as landing pages vivas de cada página.
  */
+
+const DEG = Math.PI / 180;
 
 class App {
   constructor() {
@@ -11,472 +13,440 @@ class App {
     this.pageCounter = document.getElementById('page-counter');
     this.btnPrev = document.getElementById('btn-prev');
     this.btnNext = document.getElementById('btn-next');
+    this.btnZoom = document.getElementById('btn-zoom');
+    this.btnClose = document.getElementById('btn-close');
     this.btnSound = document.getElementById('btn-sound');
-    this.cursorHint = document.getElementById('cursor-hint');
+    this.hintClosed = document.getElementById('hint-closed');
+    this.dock = document.getElementById('dock');
+    this.dotsEl = document.getElementById('page-dots');
 
-    // Camera preset coordinates & Dynamic Journal Hover Zoom
-    this.cameraPresets = {
-      studio: { x: 0, y: 10.3, z: 7.3, lookY: -0.2, fov: 37 },
-      focus: { x: 0, y: 8.5, z: 5.0, lookY: 0.05, fov: 35 },
-    };
-    this.cameraState = {
-      baseX: 0,
-      baseY: 10.3,
-      baseZ: 7.3,
-      lookX: 0,
-      lookY: -0.2,
-      lookZ: 0,
-      isFocused: false,
-    };
-    this.currentView = 'studio';
+    this.fov = 34;
+    this.view = 'closed';
+    this.rig = { tx: 0, tz: 0, dist: 14, elev: 58 * DEG, azim: 0 };
 
-    // Mouse Parallax & Raycasting
     this.mouse = new THREE.Vector2();
-    this.targetMouse = new THREE.Vector2();
-    this.mouseMoved = false;
+    this.targetMouse = new THREE.Vector2(0, 0);
+    this.pointerOnCanvas = false;
     this.raycaster = new THREE.Raycaster();
-    this.hoverState = null;
-    this.activeKeyHover = null; // [row, col] on Page 3 keypad
+    this.activePage = null;
+    this.visiblePages = new Set();
+    this.lastHit = null;
 
     this.init();
   }
 
-  async init() {
-    // 1. Setup Three.js Scene & Renderer (Cinematic Moody Dark Atmosphere)
+  init() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x030406);
-    this.scene.fog = new THREE.FogExp2(0x030406, 0.030);
+    this.scene.fog = new THREE.FogExp2(0x030406, 0.03);
 
-    this.camera = new THREE.PerspectiveCamera(
-      this.cameraPresets.studio.fov,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      100
-    );
-    const startPreset = this.cameraPresets.studio;
-    this.camera.position.set(startPreset.x, startPreset.y, startPreset.z);
-    this.camera.lookAt(0, startPreset.lookY, 0);
+    this.camera = new THREE.PerspectiveCamera(this.fov, window.innerWidth / window.innerHeight, 0.1, 100);
 
-    this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      powerPreference: 'high-performance',
-      stencil: false,
-    });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', stencil: false });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.outputEncoding = THREE.sRGBEncoding;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.02;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.container.appendChild(this.renderer.domElement);
 
-    // 2. Build Studio Desk & Lighting
     this.studio = new StudioEnvironment(this.scene, this.renderer);
+    // Foco de luz no livro, ambiente um pouco mais escuro
+    if (this.studio.bookFill) {
+      this.studio.bookFill.intensity = 0.9;
+      this.studio.bookFill.angle = Math.PI / 3.6;
+    }
+    if (this.studio.ambientLight) this.studio.ambientLight.intensity = 0.32;
 
-    // 3. Render High-Res 2D Canvases
-    this.textureGen = new PageTextureGenerator();
-    this.pageCanvases = this.textureGen.generateAll();
+    // Páginas vivas
+    const bp = createBookPages();
+    this.pages = bp.pages;
+    this.cover = bp.cover;
+    this.pageSize = bp.size;
+    this.pages.forEach((p) => {
+      p.onNavigate = (n) => this.goToPage(n);
+      p.frame(1 / 60);
+    });
+    this.cover.frame(1 / 60);
 
-    // 4. Construct 3D Book
-    this.book = new Book3D(this.scene, this.pageCanvases);
+    this.book = new Book3D(this.scene, this.pages.map((p) => p.canvas), this.cover.canvas);
+    this.texToPage = new Map(this.book.pageThreeTextures.map((t, i) => [t, this.pages[i]]));
 
-    // 5. Setup Event Listeners
+    this.buildDots();
     this.setupEvents();
+    this.setView('closed', true);
     this.updateUI();
 
-    // 6. Dismiss Loading Screen
-    setTimeout(() => {
-      if (this.loadingOverlay) {
-        this.loadingOverlay.classList.add('hidden');
-      }
-    }, 500);
+    const hideLoader = () => this.loadingOverlay && this.loadingOverlay.classList.add('hidden');
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => {
+        this.pages.forEach((p) => {
+          if ('letters' in p) p.letters = null; // re-mede tipografia com a fonte real
+        });
+        hideLoader();
+      });
+      setTimeout(hideLoader, 2500);
+    } else {
+      setTimeout(hideLoader, 400);
+    }
 
-    // 7. Start Render Loop
+    this.clock = new THREE.Clock();
     this.animate();
   }
 
+  // ---------------------------------------------------------------------------
+  // Câmera
+  // ---------------------------------------------------------------------------
+  fitDistance(W, D, elev) {
+    const tanV = Math.tan((this.fov * DEG) / 2);
+    const aspect = window.innerWidth / window.innerHeight;
+    const uiFrac = Math.min(0.32, 190 / window.innerHeight);
+    const dH = (D * Math.sin(elev)) / 2 / (tanV * (1 - uiFrac));
+    const dW = W / 2 / (tanV * aspect * 0.94);
+    return Math.max(dH, dW) * 1.04;
+  }
+
+  computeView(name) {
+    const b = this.book;
+    const cw = b.pageW + b.coverOverhang;
+    let v;
+    switch (name) {
+      case 'closed':
+        v = { tx: 0, tz: 0.1, W: cw + 1.4, D: b.pageH + 1.2, elev: 60 * DEG, azim: -7 * DEG };
+        break;
+      case 'left':
+      case 'right':
+        // Lupa: a página ocupa a largura; mover o mouse para cima/baixo percorre a página
+        v = { tx: (name === 'left' ? -1 : 1) * b.pageW / 2, tz: 0, W: b.pageW + 0.3, D: b.pageH * 0.6, elev: 86 * DEG, azim: 0 };
+        break;
+      default:
+        v = { tx: 0, tz: 0.05, W: cw * 2 + 0.5, D: b.pageH + 0.5, elev: 74 * DEG, azim: 0 };
+    }
+    v.dist = this.fitDistance(v.W, v.D, v.elev);
+    // quanto da página fica fora do quadro (para o pan vertical da lupa)
+    const tanV = Math.tan((this.fov * DEG) / 2);
+    const visibleD = (2 * v.dist * tanV * (1 - Math.min(0.32, 190 / window.innerHeight))) / Math.sin(v.elev);
+    v.range = Math.max(0, (b.pageH + 0.3 - visibleD) / 2);
+    return v;
+  }
+
+  setView(name, instant = false) {
+    this.view = name;
+    const v = this.computeView(name);
+    this.zoomRange = name === 'left' || name === 'right' ? v.range : 0;
+    const target = { tx: v.tx, tz: v.tz, dist: v.dist, elev: v.elev, azim: v.azim };
+    if (instant) Object.assign(this.rig, target);
+    else gsap.to(this.rig, { ...target, duration: 1.3, ease: 'power3.inOut', overwrite: true });
+    document.body.dataset.view = name;
+    this.updateUI();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Eventos
+  // ---------------------------------------------------------------------------
   setupEvents() {
     window.addEventListener('resize', () => this.onResize());
+    const canvas = this.renderer.domElement;
 
-    // Mouse movement for tactile camera parallax & in-page UI hover tracking (throttled to render loop)
-    window.addEventListener('mousemove', (e) => {
+    const setMouse = (e) => {
       this.targetMouse.x = (e.clientX / window.innerWidth) * 2 - 1;
       this.targetMouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-      this.mouseMoved = true;
+    };
+
+    window.addEventListener('pointermove', (e) => {
+      setMouse(e);
+      this.pointerOnCanvas = e.target === canvas;
+    });
+    canvas.addEventListener('pointerleave', () => (this.pointerOnCanvas = false));
+
+    canvas.addEventListener('pointerdown', (e) => {
+      setMouse(e);
+      this.pointerOnCanvas = true;
+      this.downX = e.clientX;
+      this.downType = e.pointerType;
+      if (window.paperAudio) window.paperAudio.ensureRunning();
+
+      if (!this.book.isOpen) {
+        if (this.pickClosed()) this.openBook();
+        return;
+      }
+      if (this.book.isFlipping || this.book.coverAnimating) return;
+      const hit = this.pickPage();
+      if (!hit) return;
+      if (hit.page.pointerDown(hit.x, hit.y)) {
+        this.activePage = hit.page;
+        canvas.setPointerCapture(e.pointerId);
+        return;
+      }
+      if (hit.flipZone) {
+        if (hit.side === 'right') this.next();
+        else this.prev();
+      }
     });
 
-    // Click on book pages or in-page interactive landing page components
-    this.renderer.domElement.addEventListener('click', (e) => {
-      this.handleInPageClick(e);
+    window.addEventListener('pointerup', (e) => {
+      if (this.activePage) {
+        this.activePage.pointerUp();
+        this.activePage = null;
+        return;
+      }
+      if (this.downType === 'touch' && this.book.isOpen && this.downX !== undefined) {
+        const dx = e.clientX - this.downX;
+        if (dx < -60) this.next();
+        else if (dx > 60) this.prev();
+      }
+      this.downX = undefined;
     });
 
-    // Mouse wheel / trackpad scroll for fluid page flips
-    let wheelCooldown = false;
-    window.addEventListener('wheel', (e) => {
-      if (wheelCooldown || this.book.isFlipping) return;
-      if (Math.abs(e.deltaY) > 25) {
-        wheelCooldown = true;
-        if (e.deltaY > 0) {
-          this.book.flipNext((newSpread) => this.updateUI());
-        } else {
-          this.book.flipPrev((newSpread) => this.updateUI());
+    canvas.addEventListener('dblclick', () => {
+      if (!this.book.isOpen) return;
+      const hit = this.pickPage();
+      if (!hit || hit.page.isHot) return;
+      if (this.view === 'open') this.setView(hit.side);
+      else this.setView('open');
+    });
+
+    let wheelLock = false;
+    window.addEventListener(
+      'wheel',
+      (e) => {
+        if (wheelLock || Math.abs(e.deltaY) < 25) return;
+        wheelLock = true;
+        setTimeout(() => (wheelLock = false), 600);
+        if (!this.book.isOpen) {
+          if (e.deltaY > 0) this.openBook();
+          return;
         }
-        setTimeout(() => { wheelCooldown = false; }, 550);
-      }
-    }, { passive: true });
+        if (e.deltaY > 0) this.next();
+        else this.prev();
+      },
+      { passive: true }
+    );
 
-    // Navigation UI Buttons
-    if (this.btnNext) {
-      this.btnNext.addEventListener('click', () => {
-        this.book.flipNext((newSpread) => this.updateUI());
-      });
-    }
-    if (this.btnPrev) {
-      this.btnPrev.addEventListener('click', () => {
-        this.book.flipPrev((newSpread) => this.updateUI());
-      });
-    }
-
-    // Keyboard navigation
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
-        this.book.flipNext((newSpread) => this.updateUI());
-      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
-        this.book.flipPrev((newSpread) => this.updateUI());
+      if (!this.book.isOpen) {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          this.openBook();
+        }
+        return;
       }
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') this.next();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') this.prev();
+      else if (e.key === 'Escape') {
+        if (this.view !== 'open') this.setView('open');
+        else this.closeBook();
+      } else if (e.key === 'z' || e.key === 'Z') this.cycleZoom();
     });
 
-    // Sound toggle
-    if (this.btnSound) {
+    this.btnNext && this.btnNext.addEventListener('click', () => this.next());
+    this.btnPrev && this.btnPrev.addEventListener('click', () => this.prev());
+    this.btnZoom && this.btnZoom.addEventListener('click', () => this.cycleZoom());
+    this.btnClose && this.btnClose.addEventListener('click', () => this.closeBook());
+    this.hintClosed && this.hintClosed.addEventListener('click', () => this.openBook());
+    this.btnSound &&
       this.btnSound.addEventListener('click', () => {
         if (window.paperAudio) {
           const active = window.paperAudio.toggle();
           this.btnSound.classList.toggle('muted', !active);
         }
       });
-    }
-
-    // Mobile Swipe Handling
-    let touchStartX = 0;
-    window.addEventListener('touchstart', (e) => {
-      touchStartX = e.touches[0].clientX;
-    }, { passive: true });
-
-    window.addEventListener('touchend', (e) => {
-      const diff = e.changedTouches[0].clientX - touchStartX;
-      if (diff < -50) {
-        this.book.flipNext((newSpread) => this.updateUI());
-      } else if (diff > 50) {
-        this.book.flipPrev((newSpread) => this.updateUI());
-      }
-    }, { passive: true });
   }
 
-  // Dynamic Journal Hover Focus: elevates camera and highlights book with gallery spotlight
-  setJournalHover(isHovered) {
-    if (this.cameraState.isFocused === isHovered) return;
-    this.cameraState.isFocused = isHovered;
-
-    if (isHovered) {
-      // Gentle focal elevation directly over the open monograph journal (stable & jitter-free)
-      gsap.to(this.cameraState, {
-        baseX: 0,
-        baseY: 9.6,
-        baseZ: 6.8,
-        lookX: 0,
-        lookY: -0.15,
-        lookZ: 0,
-        duration: 0.65,
-        ease: 'power2.out',
-        overwrite: 'auto',
-      });
-      // Brighten reading spotlight on monograph to make it pop and stand out
-      if (this.studio && this.studio.bookFill) {
-        gsap.to(this.studio.bookFill, { intensity: 1.35, duration: 0.55, ease: 'power2.out', overwrite: 'auto' });
-      }
-    } else {
-      // Smooth return to wider studio overview
-      gsap.to(this.cameraState, {
-        baseX: 0,
-        baseY: 10.3,
-        baseZ: 7.3,
-        lookX: 0,
-        lookY: -0.2,
-        lookZ: 0,
-        duration: 0.75,
-        ease: 'power2.inOut',
-        overwrite: 'auto',
-      });
-      if (this.studio && this.studio.bookFill) {
-        gsap.to(this.studio.bookFill, { intensity: 0.55, duration: 0.65, ease: 'power2.inOut', overwrite: 'auto' });
-      }
+  buildDots() {
+    if (!this.dotsEl) return;
+    const n = this.book.totalPages / 2;
+    for (let i = 0; i < n; i++) {
+      const b = document.createElement('button');
+      b.className = 'dot-btn';
+      b.setAttribute('aria-label', `Ir para páginas ${i * 2 + 1}-${i * 2 + 2}`);
+      b.addEventListener('click', () => this.goToSpread(i));
+      this.dotsEl.appendChild(b);
     }
   }
 
-  // Raycasting on Book Pages with UV Coordinate Precision (High-Performance & Stable)
-  checkInPageRaycast() {
-    if (this.book.isFlipping) {
-      document.body.style.cursor = 'default';
-      return;
-    }
-
-    // Stable screen-space journal hover zone (prevents 3D camera displacement feedback loops)
-    const isOverJournal = Math.abs(this.targetMouse.x) < 0.62 && Math.abs(this.targetMouse.y) < 0.52;
-    this.setJournalHover(isOverJournal);
-
-    if (!isOverJournal) {
-      this.activeKeyHover = null;
-      document.body.style.cursor = 'default';
-      return;
-    }
-
-    this.raycaster.setFromCamera(this.targetMouse, this.camera);
-    const intersects = this.raycaster.intersectObjects([this.book.leftBlock, this.book.rightBlock]);
-
-    if (intersects.length > 0) {
-      const hit = intersects[0];
-      const isLeft = hit.object === this.book.leftBlock;
-      const isRight = hit.object === this.book.rightBlock;
-      const spread = this.book.currentSpread;
-
-      // Calculate canvas pixel position from UV coordinates
-      const uv = hit.uv;
-      const cx = uv.x * 1600;
-      const cy = (1.0 - uv.y) * 2260;
-
-      // SPREAD 1 (Pages 3 & 4): Page 3 on Left has the interactive mechanical keypad!
-      if (spread === 1 && isLeft) {
-        const keyInfo = this.getKeypadKeyAt(cx, cy);
-        if (keyInfo) {
-          if (!this.activeKeyHover || this.activeKeyHover.label !== keyInfo.label) {
-            this.activeKeyHover = keyInfo;
-            if (window.paperAudio) window.paperAudio.playHoverTick();
-          }
-          document.body.style.cursor = 'pointer';
-          return;
-        } else {
-          this.activeKeyHover = null;
-        }
-      }
-
-      // SPREAD 0 (Page 2 on Right): "Weightless Cloud" CTA button
-      if (spread === 0 && isRight) {
-        if (cx >= 120 && cx <= 450 && cy >= 480 && cy <= 560) {
-          document.body.style.cursor = 'pointer';
-          return;
-        }
-      }
-
-      // SPREAD 3 (Page 8 on Right): "hello@rappu.io" Contact card
-      if (spread === 3 && isRight) {
-        if (cx >= 120 && cx <= 1480 && cy >= 780 && cy <= 1000) {
-          document.body.style.cursor = 'pointer';
-          return;
-        }
-      }
-
-      // Default page flipping cursor on margins/page areas
-      document.body.style.cursor = 'pointer';
-      return;
-    }
-
-    document.body.style.cursor = 'default';
+  // ---------------------------------------------------------------------------
+  // Ações
+  // ---------------------------------------------------------------------------
+  openBook() {
+    if (this.book.isOpen || this.book.coverAnimating) return;
+    this.wantOpen = true;
+    this.book.open(() => this.updateUI());
+    // Em telas verticais (celular) abre direto na página da esquerda, em modo lupa
+    this.setView(window.innerWidth / window.innerHeight < 0.85 ? 'left' : 'open');
+    this.updateUI();
   }
 
-  // Calculate if (cx, cy) is over one of the 12 keypad keys on Page 3
-  getKeypadKeyAt(cx, cy) {
-    const kw = 1600 - 240;
-    const kh = 850;
-    const kx = 120;
-    const ky = 540;
-
-    const rows = 3;
-    const cols = 4;
-    const gap = 24;
-    const keyW = (kw - 80 - 60 - gap * (cols - 1)) / cols;
-    const keyH = (kh - 80 - 60 - gap * (rows - 1)) / rows;
-    const startX = kx + 40 + 30;
-    const startY = ky + 40 + 30;
-
-    const labels = [
-      ['01', 'SHIFT', 'CMD', 'OPT'],
-      ['ESC', 'TAB', 'ENTER', 'PLAY'],
-      ['AUDIO', 'SYNC', 'MUTE', 'LIVE']
-    ];
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const x = startX + c * (keyW + gap);
-        const y = startY + r * (keyH + gap);
-        if (cx >= x && cx <= x + keyW && cy >= y && cy <= y + keyH) {
-          return { row: r, col: c, label: labels[r][c], x, y, w: keyW, h: keyH };
-        }
-      }
-    }
-    return null;
+  closeBook() {
+    if (!this.book.isOpen) return;
+    this.wantOpen = false;
+    this.book.close(() => this.updateUI());
+    setTimeout(() => this.setView('closed'), this.book.currentSpread !== 0 ? 500 : 0);
+    this.updateUI();
   }
 
-  // Handle in-page interactive clicks vs page flips
-  handleInPageClick(e) {
-    if (this.book.isFlipping) return;
-
-    this.raycaster.setFromCamera(this.targetMouse, this.camera);
-    const intersects = this.raycaster.intersectObjects([this.book.leftBlock, this.book.rightBlock]);
-
-    if (intersects.length > 0) {
-      const hit = intersects[0];
-      const isLeft = hit.object === this.book.leftBlock;
-      const isRight = hit.object === this.book.rightBlock;
-      const spread = this.book.currentSpread;
-
-      const uv = hit.uv;
-      const cx = uv.x * 1600;
-      const cy = (1.0 - uv.y) * 2260;
-
-      // 1. Mechanical Keypad Click on Page 3
-      if (spread === 1 && isLeft) {
-        const keyInfo = this.getKeypadKeyAt(cx, cy);
-        if (keyInfo) {
-          // Play tactile switch click
-          if (window.paperAudio) window.paperAudio.playKeyClick();
-          // Visual keypress animation on Page 3 canvas
-          this.triggerKeypressVisual(keyInfo);
-          return;
-        }
-      }
-
-      // 2. Launch Console CTA on Page 2
-      if (spread === 0 && isRight) {
-        if (cx >= 120 && cx <= 450 && cy >= 480 && cy <= 560) {
-          if (window.paperAudio) window.paperAudio.playKeyClick();
-          return;
-        }
-      }
-
-      // 3. Contact Email Copy on Page 8
-      if (spread === 3 && isRight) {
-        if (cx >= 120 && cx <= 1480 && cy >= 780 && cy <= 1000) {
-          navigator.clipboard.writeText('hello@rappu.io').catch(() => {});
-          if (window.paperAudio) window.paperAudio.playKeyClick();
-          return;
-        }
-      }
-
-      // 4. Page Flip on background
-      if (isRight) {
-        this.book.flipNext((newSpread) => this.updateUI());
-      } else if (isLeft) {
-        this.book.flipPrev((newSpread) => this.updateUI());
-      }
-    }
+  next() {
+    if (!this.book.isOpen) return this.openBook();
+    const last = this.book.currentSpread >= this.book.totalPages / 2 - 1;
+    if (this.view === 'left') return this.setView('right');
+    if (this.view === 'right' && !last) this.setView('left');
+    this.book.flipNext(() => this.updateUI());
   }
 
-  // Interactive flash on pressed mechanical keycap
-  triggerKeypressVisual(keyInfo) {
-    const canvas = this.pageCanvases[2]; // Page 3 canvas (index 2)
-    const ctx = canvas.getContext('2d');
-
-    // Draw active glowing pressed key
-    ctx.save();
-    ctx.fillStyle = '#38bdf8';
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.roundRect(keyInfo.x, keyInfo.y + 6, keyInfo.w, keyInfo.h, 14);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.font = '700 22px "JetBrains Mono", monospace';
-    ctx.fillStyle = '#0a0b0e';
-    ctx.textAlign = 'center';
-    ctx.fillText(keyInfo.label, keyInfo.x + keyInfo.w / 2, keyInfo.y + keyInfo.h / 2 + 10);
-    ctx.restore();
-
-    this.book.leftPageMat.map.needsUpdate = true;
-
-    // Reset keycap appearance after 180ms
-    setTimeout(() => {
-      this.textureGen.renderKeycap(canvas, keyInfo.row, keyInfo.col, false);
-      this.book.leftPageMat.map.needsUpdate = true;
-    }, 180);
+  prev() {
+    if (!this.book.isOpen) return;
+    if (this.view === 'right') return this.setView('left');
+    if (this.view === 'left' && this.book.currentSpread > 0) this.setView('right');
+    this.book.flipPrev(() => this.updateUI());
   }
 
-  showHoverHint(text) {}
-  hideHoverHint() {}
+  cycleZoom() {
+    if (!this.book.isOpen) return;
+    const order = { open: 'left', left: 'right', right: 'open' };
+    this.setView(order[this.view] || 'open');
+  }
+
+  goToSpread(i) {
+    if (!this.book.isOpen) return;
+    if (i === this.book.currentSpread || this.book.isFlipping) return;
+    this.book.goToSpread(i, () => this.updateUI());
+  }
+
+  goToPage(n) {
+    const spread = Math.floor((n - 1) / 2);
+    if (this.view !== 'open') this.setView(n % 2 === 1 ? 'left' : 'right');
+    this.goToSpread(spread);
+  }
 
   updateUI() {
+    if (!this.book) return;
+    document.body.classList.toggle('is-open', !!this.wantOpen);
     const spread = this.book.currentSpread;
     const total = this.book.totalPages;
-
     if (this.pageCounter) {
-      const leftPage = spread * 2 + 1;
-      const rightPage = spread * 2 + 2;
-      this.pageCounter.innerHTML = `<span class="current">${String(leftPage).padStart(2, '0')}-${String(rightPage).padStart(2, '0')}</span> <span class="total">/ ${String(total).padStart(2, '0')}</span>`;
+      this.pageCounter.innerHTML = `<span class="current">${String(spread * 2 + 1).padStart(2, '0')}–${String(spread * 2 + 2).padStart(2, '0')}</span> <span class="total">/ ${String(total).padStart(2, '0')}</span>`;
     }
-
-    if (this.btnPrev) this.btnPrev.disabled = spread === 0;
-    if (this.btnNext) this.btnNext.disabled = spread >= (total / 2) - 1;
+    if (this.btnPrev) this.btnPrev.disabled = spread === 0 && this.view !== 'right';
+    if (this.btnNext) this.btnNext.disabled = spread >= total / 2 - 1 && this.view !== 'left';
+    if (this.dotsEl) [...this.dotsEl.children].forEach((d, i) => d.classList.toggle('active', i === spread));
+    if (this.btnZoom) this.btnZoom.classList.toggle('active', this.view === 'left' || this.view === 'right');
   }
 
+  // ---------------------------------------------------------------------------
+  // Raycasting
+  // ---------------------------------------------------------------------------
+  pickClosed() {
+    if (!this.pointerOnCanvas) return false;
+    this.raycaster.setFromCamera(this.targetMouse, this.camera);
+    const b = this.book;
+    return this.raycaster.intersectObjects([b.leftCover, b.leftBlock, b.rightBlock, b.rightCover, b.closedSpine]).length > 0;
+  }
+
+  pickPage() {
+    if (!this.pointerOnCanvas) return null;
+    this.raycaster.setFromCamera(this.targetMouse, this.camera);
+    const b = this.book;
+    const hits = this.raycaster.intersectObjects([b.leftBlock, b.rightBlock]);
+    const hit = hits.find((h) => h.face && h.face.materialIndex === 4);
+    if (!hit) return null;
+    const side = hit.object === b.leftBlock ? 'left' : 'right';
+    const idx = b.currentSpread * 2 + (side === 'left' ? 0 : 1);
+    const x = hit.uv.x * this.pageSize.w;
+    const y = (1 - hit.uv.y) * this.pageSize.h;
+    const edge = this.pageSize.w * 0.07;
+    const flipZone = side === 'right' ? x > this.pageSize.w - edge : x < edge;
+    return { page: this.pages[idx], side, x, y, flipZone };
+  }
+
+  // ---------------------------------------------------------------------------
   onResize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
-
     this.camera.aspect = w / h;
-
-    if (w < 768) {
-      this.camera.position.y = 12.2;
-      this.camera.position.z = 8.2;
-    } else {
-      const preset = this.cameraPresets.studio;
-      this.camera.position.set(preset.x, preset.y, preset.z);
-    }
-
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    const v = this.computeView(this.view);
+    gsap.killTweensOf(this.rig);
+    Object.assign(this.rig, { tx: v.tx, tz: v.tz, dist: v.dist, elev: v.elev, azim: v.azim });
+    this.zoomRange = this.view === 'left' || this.view === 'right' ? v.range : 0;
   }
 
   animate() {
     requestAnimationFrame(() => this.animate());
+    const dt = Math.min(this.clock.getDelta(), 0.05);
+    const time = this.clock.elapsedTime;
 
-    const time = performance.now() * 0.001;
-
-    // Run raycast at most once per animation frame only when mouse moved
-    if (this.mouseMoved && !this.book.isFlipping) {
-      this.checkInPageRaycast();
-      this.mouseMoved = false;
-    }
-
-    // Silky smooth mouse parallax lerp
     this.mouse.x += (this.targetMouse.x - this.mouse.x) * 0.05;
     this.mouse.y += (this.targetMouse.y - this.mouse.y) * 0.05;
 
-    // Gentle spatial tilt with dynamic Journal Focus on Hover
-    const camParam = new URLSearchParams(window.location.search).get('cam');
-    if (camParam) {
-      const v = camParam.split(',').map(Number);
-      this.camera.position.set(v[0], v[1], v[2]);
-      this.camera.lookAt(v[3], v[4], v[5]);
-    } else {
-      const pScale = this.cameraState.isFocused ? 0.35 : 0.65;
-      this.camera.position.x = this.cameraState.baseX + this.mouse.x * (0.55 * pScale);
-      this.camera.position.y = this.cameraState.baseY;
-      this.camera.position.z = this.cameraState.baseZ + this.mouse.y * (0.35 * pScale);
-      this.camera.lookAt(
-        this.cameraState.lookX + this.mouse.x * 0.15,
-        this.cameraState.lookY,
-        this.cameraState.lookZ
-      );
+    // câmera orbital com parallax sutil
+    const zoomed = this.view === 'left' || this.view === 'right';
+    const ps = zoomed ? 0.25 : this.book.isOpen ? 0.6 : 1.4;
+    const elev = this.rig.elev + this.mouse.y * 0.02 * ps;
+    const azim = this.rig.azim + this.mouse.x * 0.035 * ps;
+    const r = this.rig.dist;
+    const panTarget = zoomed ? THREE.MathUtils.clamp(-this.targetMouse.y * 1.25, -1, 1) * (this.zoomRange || 0) : 0;
+    this.pan = (this.pan || 0) + (panTarget - (this.pan || 0)) * (1 - Math.exp(-4 * dt));
+    const tz = this.rig.tz + this.pan;
+    this.camera.position.set(
+      this.rig.tx + r * Math.cos(elev) * Math.sin(azim),
+      r * Math.sin(elev),
+      tz + r * Math.cos(elev) * Math.cos(azim)
+    );
+    this.camera.lookAt(this.rig.tx, 0, tz);
+    this.scene.fog.density = 0.36 / Math.max(8, r);
+    this.camera.updateMatrixWorld();
+
+    // interação
+    let cursor = 'default';
+    const b = this.book;
+    let hoveredPage = null;
+    if (!b.isOpen) {
+      const over = !b.coverAnimating && this.pickClosed();
+      if (over !== this.coverHover) {
+        this.coverHover = over;
+        b.setCoverTease(over ? 1 : 0);
+      }
+      if (over) cursor = 'pointer';
+    } else if (!b.isFlipping && !b.coverAnimating) {
+      const hit = this.pickPage();
+      if (hit) {
+        hoveredPage = hit.page;
+        hit.page.setPointer(hit.x, hit.y, true);
+        if (hit.page.isHot || hit.page.dragId) cursor = 'pointer';
+        else if (hit.flipZone) cursor = hit.side === 'right' ? 'e-resize' : 'w-resize';
+      }
+    }
+    if (this.activePage && this.activePage !== hoveredPage) hoveredPage = this.activePage;
+    this.pages.forEach((p) => {
+      if (p !== hoveredPage) p.setPointer(0, 0, false);
+    });
+    if (this.activePage) cursor = 'grabbing';
+    if (this.renderer.domElement.style.cursor !== cursor) this.renderer.domElement.style.cursor = cursor;
+
+    // anima somente as páginas visíveis
+    const visTex = b.getVisibleTextures();
+    const nowVisible = new Set();
+    visTex.forEach((tex) => {
+      const page = this.texToPage.get(tex);
+      if (!page) return;
+      nowVisible.add(page);
+      if (!this.visiblePages.has(page)) page.onShow();
+      page.frame(dt);
+      tex.needsUpdate = true;
+    });
+    this.visiblePages = nowVisible;
+
+    if (!b.isOpen || b.coverAnimating) {
+      this.cover.hoverAmt += ((this.coverHover ? 1 : 0) - this.cover.hoverAmt) * 0.1;
+      this.cover.frame(dt);
+      b.coverTexture.needsUpdate = true;
     }
 
-    // Studio environment micro-animations
-    if (this.studio && this.studio.update) {
-      this.studio.update(time);
-    }
-
-    // Pristine native Three.js ACESFilmic tone-mapped rendering
+    if (this.studio && this.studio.update) this.studio.update(time);
     this.renderer.render(this.scene, this.camera);
   }
 }

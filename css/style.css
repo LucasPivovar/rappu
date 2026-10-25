@@ -72,11 +72,11 @@ html, body {
   pointer-events: none;
   z-index: 4;
   background: radial-gradient(
-    ellipse 75% 70% at 50% 52%,
-    transparent 40%,
-    rgba(2, 3, 4, 0.35) 62%,
-    rgba(1, 2, 3, 0.80) 85%,
-    rgba(0, 0, 0, 0.97) 100%
+    ellipse 85% 80% at 50% 50%,
+    transparent 55%,
+    rgba(2, 3, 4, 0.30) 72%,
+    rgba(1, 2, 3, 0.70) 90%,
+    rgba(0, 0, 0, 0.92) 100%
   );
   box-shadow: inset 0 0 180px 60px rgba(0, 0, 0, 0.85);
 }
@@ -356,6 +356,7 @@ html, body {
 }
 
 .page-counter {
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 500;
@@ -424,6 +425,82 @@ html, body {
 }
 
 
+
+/* ==========================================================================
+   ESTADOS FECHADO / ABERTO
+   ========================================================================== */
+
+.bottom-bar { position: relative; min-height: 52px; }
+
+.when-open,
+.when-closed {
+  transition: opacity 0.5s var(--ease-spring), transform 0.5s var(--ease-spring);
+}
+.when-open { opacity: 0; transform: translateY(10px); pointer-events: none; }
+body.is-open .when-open { opacity: 1; transform: none; pointer-events: auto; }
+body.is-open .when-closed { opacity: 0; transform: translateY(10px); pointer-events: none; }
+
+.bottom-bar > .when-closed,
+.bottom-bar > .when-open { position: absolute; left: 50%; bottom: 0; translate: -50% 0; }
+
+.hint-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-dock), var(--shadow-inset-highlight);
+  white-space: nowrap;
+}
+.hint-pill:hover { color: var(--text-primary); border-color: var(--border-active); }
+.hint-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #a5b4fc;
+  box-shadow: 0 0 0 0 rgba(165, 180, 252, 0.6);
+  animation: hint-pulse 1.8s infinite;
+}
+@keyframes hint-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(165, 180, 252, 0.55); }
+  100% { box-shadow: 0 0 0 12px rgba(165, 180, 252, 0); }
+}
+
+.pill-btn {
+  height: 40px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-inset-highlight);
+  transition: opacity 0.5s var(--ease-spring), transform 0.5s var(--ease-spring), color 0.2s, border-color 0.2s;
+}
+.pill-btn:hover { color: var(--text-primary); border-color: var(--border-active); }
+
+.dock-sep { width: 1px; height: 20px; background: var(--border-hairline); margin: 0 2px; }
+.nav-btn.active { background: rgba(255, 255, 255, 0.9); color: #0a0b0e; }
+
+@media (max-width: 640px) {
+  .ui-layer { padding: 16px; }
+  .page-dots { display: none; }
+}
 
 /* ==========================================================================
    LOADING OVERLAY

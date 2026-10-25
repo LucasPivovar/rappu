@@ -6,9 +6,13 @@
  */
 
 class Book3D {
-  constructor(scene, textures) {
+  constructor(scene, textures, coverCanvas) {
     this.scene = scene;
-    this.canvasTextures = textures; // Array of 8 Three.js CanvasTextures
+    this.canvasTextures = textures; // Array of 8 page canvases (animated)
+    this.coverCanvas = coverCanvas;
+    this.openness = 0; // 0 = fechado, 1 = aberto
+    this.coverTease = 0; // leve levantada da capa no hover
+    this.isOpen = false;
     this.group = new THREE.Group();
     this.scene.add(this.group);
 
@@ -30,6 +34,7 @@ class Book3D {
     this.buildPageBlocks();
     this.buildTurningSheet();
     this.buildSpineShadow();
+    this.buildFlap();
 
     // Position book on the desk
     this.group.position.set(0, this.blockThickness / 2 + 0.01, 0);
@@ -37,6 +42,7 @@ class Book3D {
     this.group.rotation.z = 0;
 
     this.updateSpreadTextures(0);
+    this.applyOpenness();
   }
 
   initMaterials() {
@@ -46,17 +52,30 @@ class Book3D {
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
-      tex.anisotropy = 16;
+      tex.anisotropy = 8;
       tex.encoding = THREE.sRGBEncoding;
       return tex;
     });
 
+    this.coverTexture = new THREE.CanvasTexture(this.coverCanvas);
+    this.coverTexture.anisotropy = 8;
+    this.coverTexture.encoding = THREE.sRGBEncoding;
+
     // Crisp high-fidelity luxury monograph paper material
     this.createPageMaterial = (texture) => {
-      return new THREE.MeshStandardMaterial({
+      // Papel fosco: sem brilho especular "lavando" os pretos, com leve auto-iluminação
+      // A cena soma ~5x de irradiância sobre o livro; o albedo reduzido + emissivo
+      // faz a página deitada reproduzir as cores exatas do canvas, e ainda escurecer
+      // naturalmente quando ela se curva ao virar.
+      return new THREE.MeshPhongMaterial({
         map: texture,
-        roughness: 0.46,
-        metalness: 0.02,
+        color: 0x262626,
+        emissive: 0xffffff,
+        emissiveMap: texture,
+        emissiveIntensity: 0.26,
+        specular: 0x000000,
+        shininess: 1,
+        toneMapped: false,
         side: THREE.FrontSide,
       });
     };
@@ -127,7 +146,18 @@ class Book3D {
 
     // Left Cover Plate
     const leftCoverGeo = new THREE.BoxGeometry(cw, ch, ct);
-    this.leftCover = new THREE.Mesh(leftCoverGeo, this.coverMaterial);
+    this.coverFrontMat = new THREE.MeshPhongMaterial({
+      map: this.coverTexture,
+      color: 0x262626,
+      emissive: 0xffffff,
+      emissiveMap: this.coverTexture,
+      emissiveIntensity: 0.2,
+      specular: 0x000000,
+      shininess: 1,
+      toneMapped: false,
+    });
+    const cm = this.coverMaterial;
+    this.leftCover = new THREE.Mesh(leftCoverGeo, [cm, cm, cm, cm, cm, this.coverFrontMat]);
     this.leftCover.position.set(-cw / 2 - 0.02, 0, -this.blockThickness - ct / 2);
     this.leftCover.receiveShadow = true;
     this.leftCover.castShadow = true;
@@ -172,6 +202,15 @@ class Book3D {
     const bookContactShadow = new THREE.Mesh(bookShadowGeo, bsMat);
     bookContactShadow.position.set(0, 0, -this.blockThickness - ct - 0.005);
     this.group.add(bookContactShadow);
+    this.contactShadow = bookContactShadow;
+    this.coverThickness = ct;
+
+    // Lombada vista quando o livro está fechado
+    const spineGeo = new THREE.BoxGeometry(0.05, ch, this.blockThickness * 2 + ct * 2 + 0.01);
+    this.closedSpine = new THREE.Mesh(spineGeo, this.coverMaterial);
+    this.closedSpine.position.set(-0.025, 0, 0);
+    this.closedSpine.castShadow = true;
+    this.group.add(this.closedSpine);
   }
 
   /**
@@ -326,6 +365,89 @@ class Book3D {
     const spineShadow = new THREE.Mesh(shadowGeo, mat);
     spineShadow.position.set(0, 0, 0.002);
     this.group.add(spineShadow);
+    this.spineShadow = spineShadow;
+  }
+
+  // A capa + bloco esquerdo giram juntos em torno da lombada (eixo Y local)
+  buildFlap() {
+    this.flap = new THREE.Group();
+    this.group.add(this.flap);
+    this.flap.add(this.leftBlock);
+    this.flap.add(this.leftCover);
+  }
+
+  applyOpenness() {
+    const o = this.openness;
+    const tease = this.coverTease * (1 - o);
+    this.flap.rotation.y = Math.PI * (1 - o) - tease * 0.22;
+    const cw = this.pageW + this.coverOverhang;
+    const k = o * o * (3 - 2 * o);
+    this.group.position.x = -(cw / 2 + 0.02) * (1 - k);
+    this.contactShadow.scale.x = 0.52 + 0.48 * k;
+    this.contactShadow.position.x = (cw / 2 + 0.02) * (1 - k);
+    this.closedSpine.visible = o < 0.04;
+    this.spineShadow.material.opacity = 0.7 * clamp01((o - 0.6) / 0.4);
+  }
+
+  setCoverTease(v) {
+    gsap.to(this, { coverTease: v, duration: 0.5, ease: 'power2.out', overwrite: 'auto', onUpdate: () => this.applyOpenness() });
+  }
+
+  open(onComplete) {
+    if (this.isOpen || this.coverAnimating) return;
+    this.coverAnimating = true;
+    if (window.paperAudio) window.paperAudio.playFlipSound(1);
+    gsap.to(this, {
+      openness: 1,
+      coverTease: 0,
+      duration: 1.5,
+      ease: 'power3.inOut',
+      onUpdate: () => this.applyOpenness(),
+      onComplete: () => {
+        this.isOpen = true;
+        this.coverAnimating = false;
+        if (onComplete) onComplete();
+      },
+    });
+  }
+
+  close(onComplete) {
+    if (!this.isOpen || this.coverAnimating) return;
+    const doClose = () => {
+      this.coverAnimating = true;
+      this.isOpen = false;
+      if (window.paperAudio) window.paperAudio.playFlipSound(-1);
+      gsap.to(this, {
+        openness: 0,
+        duration: 1.3,
+        ease: 'power3.inOut',
+        onUpdate: () => this.applyOpenness(),
+        onComplete: () => {
+          this.coverAnimating = false;
+          if (onComplete) onComplete();
+        },
+      });
+    };
+    if (this.currentSpread !== 0) {
+      this.goToSpread(0, () => setTimeout(doClose, 120));
+    } else {
+      doClose();
+    }
+  }
+
+  // Texturas de página que estão visíveis agora (para animar só o necessário)
+  getVisibleTextures() {
+    const set = new Set([this.leftPageMat.map, this.rightPageMat.map]);
+    if (this.turningGroup.visible) {
+      set.add(this.turnFrontMat.map);
+      set.add(this.turnBackMat.map);
+    }
+    return set;
+  }
+
+  setMap(mat, tex) {
+    mat.map = tex;
+    mat.emissiveMap = tex;
   }
 
   /**
@@ -452,19 +574,8 @@ class Book3D {
   updateSpreadTextures(spreadIndex) {
     const leftIdx = spreadIndex * 2;
     const rightIdx = leftIdx + 1;
-
-    // Update left static block
-    if (this.leftPageMat) {
-      this.leftPageMat.map = this.pageThreeTextures[leftIdx];
-      this.leftPageMat.needsUpdate = true;
-    }
-
-    // Update right static block
-    if (this.rightPageMat) {
-      this.rightPageMat.map = this.pageThreeTextures[rightIdx];
-      this.rightPageMat.needsUpdate = true;
-    }
-
+    if (this.leftPageMat) this.setMap(this.leftPageMat, this.pageThreeTextures[leftIdx]);
+    if (this.rightPageMat) this.setMap(this.rightPageMat, this.pageThreeTextures[rightIdx]);
     this.currentSpread = spreadIndex;
   }
 
@@ -493,15 +604,12 @@ class Book3D {
     const turningBackIdx = nextSpread * 2;
     const revealedRightIdx = nextSpread * 2 + 1;
 
-    this.turnFrontMat.map = this.pageThreeTextures[turningFrontIdx];
-    this.turnFrontMat.needsUpdate = true;
-
-    this.turnBackMat.map = this.pageThreeTextures[turningBackIdx];
-    this.turnBackMat.needsUpdate = true;
-
-    this.rightPageMat.map = this.pageThreeTextures[revealedRightIdx];
-    this.rightPageMat.needsUpdate = true;
-
+    this.setMap(this.turnFrontMat, this.pageThreeTextures[turningFrontIdx]);
+    
+    this.setMap(this.turnBackMat, this.pageThreeTextures[turningBackIdx]);
+    
+    this.setMap(this.rightPageMat, this.pageThreeTextures[revealedRightIdx]);
+    
     this.turningGroup.visible = true;
     this.flipProgress = 0;
     this.deformTurningSheet(0, 1);
@@ -563,15 +671,12 @@ class Book3D {
     const turningBackIdx = currentSpread * 2;
     const revealedLeftIdx = prevSpread * 2;
 
-    this.turnFrontMat.map = this.pageThreeTextures[turningFrontIdx];
-    this.turnFrontMat.needsUpdate = true;
-
-    this.turnBackMat.map = this.pageThreeTextures[turningBackIdx];
-    this.turnBackMat.needsUpdate = true;
-
-    this.leftPageMat.map = this.pageThreeTextures[revealedLeftIdx];
-    this.leftPageMat.needsUpdate = true;
-
+    this.setMap(this.turnFrontMat, this.pageThreeTextures[turningFrontIdx]);
+    
+    this.setMap(this.turnBackMat, this.pageThreeTextures[turningBackIdx]);
+    
+    this.setMap(this.leftPageMat, this.pageThreeTextures[revealedLeftIdx]);
+    
     this.turningGroup.visible = true;
     this.flipProgress = 0;
     this.deformTurningSheet(0, -1);
@@ -630,18 +735,14 @@ class Book3D {
     const turningBackIdx = isForward ? (targetSpread * 2) : (this.currentSpread * 2);
     const revealedStaticIdx = isForward ? (targetSpread * 2 + 1) : (targetSpread * 2);
 
-    this.turnFrontMat.map = this.pageThreeTextures[turningFrontIdx];
-    this.turnFrontMat.needsUpdate = true;
-
-    this.turnBackMat.map = this.pageThreeTextures[turningBackIdx];
-    this.turnBackMat.needsUpdate = true;
-
+    this.setMap(this.turnFrontMat, this.pageThreeTextures[turningFrontIdx]);
+    
+    this.setMap(this.turnBackMat, this.pageThreeTextures[turningBackIdx]);
+    
     if (isForward) {
-      this.rightPageMat.map = this.pageThreeTextures[revealedStaticIdx];
-      this.rightPageMat.needsUpdate = true;
-    } else {
-      this.leftPageMat.map = this.pageThreeTextures[revealedStaticIdx];
-      this.leftPageMat.needsUpdate = true;
+      this.setMap(this.rightPageMat, this.pageThreeTextures[revealedStaticIdx]);
+          } else {
+      this.setMap(this.leftPageMat, this.pageThreeTextures[revealedStaticIdx]);
     }
 
     this.turningGroup.visible = true;
@@ -682,3 +783,5 @@ class Book3D {
 }
 
 window.Book3D = Book3D;
+
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
