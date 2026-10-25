@@ -55,10 +55,11 @@ class App {
     this.studio = new StudioEnvironment(this.scene, this.renderer);
     // Foco de luz no livro, ambiente um pouco mais escuro
     if (this.studio.bookFill) {
-      this.studio.bookFill.intensity = 0.9;
-      this.studio.bookFill.angle = Math.PI / 3.6;
+      this.studio.bookFill.intensity = 1.1;
+      this.studio.bookFill.angle = Math.PI / 4.2;
     }
-    if (this.studio.ambientLight) this.studio.ambientLight.intensity = 0.32;
+    if (this.studio.ambientLight) this.studio.ambientLight.intensity = 0.22;
+    if (this.studio.keyLight) this.studio.keyLight.intensity = 1.8; // mesa mais escura, clima noturno
 
     // Páginas vivas
     const bp = createBookPages();
@@ -80,8 +81,8 @@ class App {
     this.updateUI();
 
     const hideLoader = () => this.loadingOverlay && this.loadingOverlay.classList.add('hidden');
-    if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(() => {
+    if (window.pageFontsReady) {
+      window.pageFontsReady.then(() => {
         this.pages.forEach((p) => {
           if ('letters' in p) p.letters = null; // re-mede tipografia com a fonte real
         });
@@ -114,7 +115,8 @@ class App {
     let v;
     switch (name) {
       case 'closed':
-        v = { tx: 0, tz: 0.1, W: cw + 1.4, D: b.pageH + 1.2, elev: 60 * DEG, azim: -7 * DEG };
+        // livro fechado sobre a mesa, plano aberto com xícara e lápis visíveis
+        v = { tx: 0, tz: 0.15, W: cw / 0.42, D: (b.pageH + 1.2) / 0.78, elev: 64 * DEG, azim: -4 * DEG };
         break;
       case 'left':
       case 'right':
@@ -122,7 +124,15 @@ class App {
         v = { tx: (name === 'left' ? -1 : 1) * b.pageW / 2, tz: 0, W: b.pageW + 0.3, D: b.pageH * 0.6, elev: 86 * DEG, azim: 0 };
         break;
       default:
-        v = { tx: 0, tz: 0.05, W: cw * 2 + 0.5, D: b.pageH + 0.5, elev: 74 * DEG, azim: 0 };
+        // enquadramento cinematográfico (como no vídeo de referência): câmera inclinada,
+        // livro em ~68% da largura, mesa e objetos visíveis em volta
+        // em janelas estreitas (painel, celular) o livro ocupa quase toda a largura
+        {
+          const narrow = window.innerWidth / window.innerHeight < 1.1;
+          v = narrow
+            ? { tx: 0, tz: 0.05, W: (cw * 2 + 0.2) / 0.96, D: b.pageH + 0.4, elev: 74 * DEG, azim: 0 }
+            : { tx: 0, tz: 0.1, W: (cw * 2 + 0.4) / 0.74, D: (b.pageH + 0.6) / 0.86, elev: 70 * DEG, azim: 0 };
+        }
     }
     v.dist = this.fitDistance(v.W, v.D, v.elev);
     // quanto da página fica fora do quadro (para o pan vertical da lupa)
@@ -157,7 +167,14 @@ class App {
 
     window.addEventListener('pointermove', (e) => {
       setMouse(e);
-      this.pointerOnCanvas = e.target === canvas;
+      this.pointerOnCanvas = e.target === canvas || !!this.touchScroll;
+      // arrastar o dedo na vertical rola a landing page
+      if (this.touchScroll && e.pointerType === 'touch') {
+        const dy = this.lastTouchY - e.clientY;
+        this.lastTouchY = e.clientY;
+        this.touchMoved = (this.touchMoved || 0) + Math.abs(dy);
+        this.touchScroll.scrollBy(dy * 2.2);
+      }
     });
     canvas.addEventListener('pointerleave', () => (this.pointerOnCanvas = false));
 
@@ -183,10 +200,24 @@ class App {
       if (hit.flipZone) {
         if (hit.side === 'right') this.next();
         else this.prev();
+        return;
+      }
+      if (e.pointerType === 'touch' && hit.page.maxScroll > 0) {
+        this.touchScroll = hit.page;
+        this.lastTouchY = e.clientY;
+        this.touchMoved = 0;
       }
     });
 
     window.addEventListener('pointerup', (e) => {
+      if (this.touchScroll) {
+        const moved = this.touchMoved > 20;
+        this.touchScroll = null;
+        if (moved) {
+          this.downX = undefined;
+          return;
+        }
+      }
       if (this.activePage) {
         this.activePage.pointerUp();
         this.activePage = null;
@@ -212,6 +243,15 @@ class App {
     window.addEventListener(
       'wheel',
       (e) => {
+        // com o mouse sobre uma página que tem mais conteúdo, a roda rola a página (como um site)
+        if (this.book.isOpen && !this.book.isFlipping && !this.book.coverAnimating) {
+          const hit = this.pickPage();
+          if (hit && hit.page.maxScroll > 0) {
+            const dy = e.deltaY * (e.deltaMode === 1 ? 30 : 1) * 1.4;
+            hit.page.scrollBy(dy);
+            return;
+          }
+        }
         if (wheelLock || Math.abs(e.deltaY) < 25) return;
         wheelLock = true;
         setTimeout(() => (wheelLock = false), 600);
@@ -274,8 +314,8 @@ class App {
     if (this.book.isOpen || this.book.coverAnimating) return;
     this.wantOpen = true;
     this.book.open(() => this.updateUI());
-    // Em telas verticais (celular) abre direto na página da esquerda, em modo lupa
-    this.setView(window.innerWidth / window.innerHeight < 0.85 ? 'left' : 'open');
+    // Sempre abre mostrando as duas páginas lado a lado
+    this.setView('open');
     this.updateUI();
   }
 
@@ -283,7 +323,7 @@ class App {
     if (!this.book.isOpen) return;
     this.wantOpen = false;
     this.book.close(() => this.updateUI());
-    setTimeout(() => this.setView('closed'), this.book.currentSpread !== 0 ? 500 : 0);
+    setTimeout(() => this.setView('closed'), 350);
     this.updateUI();
   }
 
@@ -384,9 +424,9 @@ class App {
 
     // câmera orbital com parallax sutil
     const zoomed = this.view === 'left' || this.view === 'right';
-    const ps = zoomed ? 0.25 : this.book.isOpen ? 0.6 : 1.4;
-    const elev = this.rig.elev + this.mouse.y * 0.02 * ps;
-    const azim = this.rig.azim + this.mouse.x * 0.035 * ps;
+    const ps = zoomed ? 0.25 : 1.0;
+    const elev = this.rig.elev + this.mouse.y * 0.035 * ps;
+    const azim = this.rig.azim + this.mouse.x * 0.06 * ps;
     const r = this.rig.dist;
     const panTarget = zoomed ? THREE.MathUtils.clamp(-this.targetMouse.y * 1.25, -1, 1) * (this.zoomRange || 0) : 0;
     this.pan = (this.pan || 0) + (panTarget - (this.pan || 0)) * (1 - Math.exp(-4 * dt));
@@ -430,12 +470,26 @@ class App {
     // anima somente as páginas visíveis
     const visTex = b.getVisibleTextures();
     const nowVisible = new Set();
+    // uma página só "aparece" (e dispara sua animação de entrada) quando o livro já está quase aberto
+    const live = b.openness > 0.6;
+    this.frameN = (this.frameN || 0) + 1;
+    const staticMaps = new Set([b.leftPageMat.map, b.rightPageMat.map]);
     visTex.forEach((tex) => {
       const page = this.texToPage.get(tex);
       if (!page) return;
-      nowVisible.add(page);
-      if (!this.visiblePages.has(page)) page.onShow();
-      page.frame(dt);
+      // livro fechado e parado: nada das páginas aparece, então não redesenha
+      if (!b.isOpen && !b.coverAnimating) return;
+      if (live) nowVisible.add(page);
+      if (live && !this.visiblePages.has(page)) page.onShow();
+      // páginas que só aparecem na folha girando são redesenhadas em meia taxa
+      if (!staticMaps.has(tex)) {
+        page._acc = (page._acc || 0) + dt;
+        if (this.frameN % 2) return;
+        page.frame(page._acc);
+        page._acc = 0;
+      } else {
+        page.frame(dt);
+      }
       tex.needsUpdate = true;
     });
     this.visiblePages = nowVisible;
