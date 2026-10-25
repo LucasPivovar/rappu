@@ -20,7 +20,7 @@ class Book3D {
     this.pageW = 3.8;
     this.pageH = 5.37; // 3.8 * 1.4125
     this.blockThickness = 0.18;
-    this.coverOverhang = 0.08;
+    this.coverOverhang = 0.16;
 
     // State
     this.totalPages = 8;
@@ -35,6 +35,7 @@ class Book3D {
     this.buildTurningSheet();
     this.buildSpineShadow();
     this.buildFlap();
+    this.buildRiffle();
 
     // Position book on the desk
     this.group.position.set(0, this.blockThickness / 2 + 0.01, 0);
@@ -72,7 +73,7 @@ class Book3D {
         color: 0x262626,
         emissive: 0xffffff,
         emissiveMap: texture,
-        emissiveIntensity: 0.26,
+        emissiveIntensity: 0.38,
         specular: 0x000000,
         shininess: 1,
         toneMapped: false,
@@ -224,7 +225,7 @@ class Book3D {
     const bt = this.blockThickness;
 
     // Clean, crisp page block geometries
-    const leftBlockGeo = new THREE.BoxGeometry(bw, bh, bt);
+    const leftBlockGeo = new THREE.BoxGeometry(bw, bh, bt, 40, 1, 1);
     this.leftPageMat = this.createPageMaterial(this.pageThreeTextures[0]);
     const leftMaterials = [
       this.edgeMaterial, // +X (spine side)
@@ -242,7 +243,7 @@ class Book3D {
     this.group.add(this.leftBlock);
 
     // Right Static Page Block
-    const rightBlockGeo = new THREE.BoxGeometry(bw, bh, bt);
+    const rightBlockGeo = new THREE.BoxGeometry(bw, bh, bt, 40, 1, 1);
     this.rightPageMat = this.createPageMaterial(this.pageThreeTextures[1]);
     const rightMaterials = [
       this.edgeMaterial, // +X (outer page edge)
@@ -376,8 +377,31 @@ class Book3D {
     this.flap.add(this.leftCover);
   }
 
+  // Arco das páginas: sobem a partir da lombada e descem até a borda, como num livro aberto.
+  // A intensidade acompanha a abertura (fechado = plano, para as metades não se cruzarem).
+  setPageArch(amount) {
+    if (this._arch === amount) return;
+    this._arch = amount;
+    const bw = this.pageW, top = this.blockThickness / 2 - 1e-4;
+    [[this.leftBlock, 1], [this.rightBlock, -1]].forEach(([mesh, side]) => {
+      const pos = mesh.geometry.attributes.position;
+      if (!mesh.userData.baseZ) mesh.userData.baseZ = Float32Array.from(pos.array);
+      const base = mesh.userData.baseZ;
+      for (let i = 0; i < pos.count; i++) {
+        const z0 = base[i * 3 + 2];
+        if (z0 < top) continue;
+        const x = base[i * 3];
+        const d = side === 1 ? (bw / 2 - x) / bw : (x + bw / 2) / bw;
+        pos.array[i * 3 + 2] = z0 + amount * Math.sin(Math.PI * Math.sqrt(clamp01(d)));
+      }
+      pos.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+    });
+  }
+
   applyOpenness() {
     const o = this.openness;
+    this.setPageArch(0.075 * Math.pow(clamp01((o - 0.55) / 0.45), 2));
     const tease = this.coverTease * (1 - o);
     this.flap.rotation.y = Math.PI * (1 - o) - tease * 0.22;
     const cw = this.pageW + this.coverOverhang;
@@ -393,46 +417,118 @@ class Book3D {
     gsap.to(this, { coverTease: v, duration: 0.5, ease: 'power2.out', overwrite: 'auto', onUpdate: () => this.applyOpenness() });
   }
 
+  // Folhas extras usadas só ao abrir/fechar: passam em cascata junto com a capa
+  buildRiffle() {
+    this.riffle = [];
+    for (let i = 0; i < 9; i++) {
+      const front = new THREE.Mesh(this.turnFrontMesh.geometry.clone(), this.createPageMaterial(this.pageThreeTextures[1]));
+      const back = new THREE.Mesh(this.turnBackMesh.geometry.clone(), this.createPageMaterial(this.pageThreeTextures[0]));
+      front.castShadow = back.castShadow = true;
+      const g = new THREE.Group();
+      g.add(front, back);
+      g.visible = false;
+      this.group.add(g);
+      this.riffle.push({ group: g, front, back, p: 0 });
+    }
+  }
+
+  // dir 1: da direita para a esquerda (abrir) · dir -1: da esquerda para a direita (fechar)
+  playRiffle(dir, { delay = 0, stagger = 0.07, dur = 0.9, faces } = {}) {
+    const n = this.riffle.length;
+    const e = 0.0016;
+    return new Promise((resolve) => {
+      this.riffle.forEach((sh, i) => {
+        const [fTex, bTex] = faces(i, n);
+        this.setMap(sh.front.material, fTex);
+        this.setMap(sh.back.material, bTex);
+        sh.p = 0;
+        sh.group.position.z = 0.002 + (n - 1 - i) * e;
+        this.deformTurningSheet(0, dir, sh.front, sh.back, false);
+        if (dir === -1) sh.group.visible = true;
+        gsap.to(sh, {
+          p: 1,
+          duration: dur,
+          delay: delay + i * stagger,
+          ease: 'power2.inOut',
+          onStart: () => {
+            sh.group.visible = true;
+            if (window.paperAudio && i % 3 === 0) window.paperAudio.playFlipSound(dir);
+          },
+          onUpdate: () => {
+            // a folha que vira primeiro fica por cima ao sair e por baixo ao chegar
+            sh.group.position.z = 0.002 + (sh.p < 0.5 ? n - 1 - i : i) * e;
+            this.deformTurningSheet(sh.p, dir, sh.front, sh.back, false);
+          },
+          onComplete: () => {
+            if (i === n - 1) resolve();
+          },
+        });
+      });
+    });
+  }
+
+  hideRiffle() {
+    this.riffle.forEach((sh) => (sh.group.visible = false));
+  }
+
   open(onComplete) {
     if (this.isOpen || this.coverAnimating) return;
     this.coverAnimating = true;
     if (window.paperAudio) window.paperAudio.playFlipSound(1);
+    this.updateSpreadTextures(0);
+    const T = this.pageThreeTextures;
+    // capa e páginas num único gesto: a capa lidera e as folhas vêm logo atrás, em cascata
     gsap.to(this, {
       openness: 1,
       coverTease: 0,
       duration: 1.5,
-      ease: 'power3.inOut',
+      ease: 'power3.out',
       onUpdate: () => this.applyOpenness(),
-      onComplete: () => {
-        this.isOpen = true;
-        this.coverAnimating = false;
-        if (onComplete) onComplete();
-      },
+    });
+    this.playRiffle(1, {
+      delay: 0.16,
+      stagger: 0.075,
+      dur: 0.95,
+      // a frente de cada folha é igual à página da direita (entra sem "piscar");
+      // o verso mostra páginas variadas e a última folha termina na primeira página
+      faces: (i, n) => [T[1], i === n - 1 ? T[0] : T[2 + (i % (T.length - 2))]],
+    }).then(() => {
+      this.hideRiffle();
+      this.isOpen = true;
+      this.coverAnimating = false;
+      if (onComplete) onComplete();
     });
   }
 
   close(onComplete) {
-    if (!this.isOpen || this.coverAnimating) return;
-    const doClose = () => {
-      this.coverAnimating = true;
-      this.isOpen = false;
-      if (window.paperAudio) window.paperAudio.playFlipSound(-1);
-      gsap.to(this, {
-        openness: 0,
-        duration: 1.3,
-        ease: 'power3.inOut',
-        onUpdate: () => this.applyOpenness(),
-        onComplete: () => {
-          this.coverAnimating = false;
-          if (onComplete) onComplete();
-        },
-      });
-    };
-    if (this.currentSpread !== 0) {
-      this.goToSpread(0, () => setTimeout(doClose, 120));
-    } else {
-      doClose();
-    }
+    if (!this.isOpen || this.coverAnimating || this.isFlipping) return;
+    this.coverAnimating = true;
+    this.isOpen = false;
+    const T = this.pageThreeTextures;
+    const curLeft = this.leftPageMat.map;
+    // a página da esquerda passa a ser a primeira (fica escondida sob as folhas);
+    // a da direita só troca no fim, já coberta pela capa
+    this.setMap(this.leftPageMat, T[0]);
+    this.currentSpread = 0;
+    // as folhas voltam em cascata e a capa fecha logo em seguida, sem pausa
+    this.playRiffle(-1, {
+      stagger: 0.06,
+      dur: 0.85,
+      faces: (i, n) => [T[2 + ((i + 3) % (T.length - 2))], i === 0 ? curLeft : T[2 + (i % (T.length - 2))]],
+    });
+    gsap.to(this, {
+      openness: 0,
+      duration: 1.3,
+      delay: 0.55,
+      ease: 'power2.inOut',
+      onUpdate: () => this.applyOpenness(),
+      onComplete: () => {
+        this.hideRiffle();
+        this.updateSpreadTextures(0);
+        this.coverAnimating = false;
+        if (onComplete) onComplete();
+      },
+    });
   }
 
   // Texturas de página que estão visíveis agora (para animar só o necessário)
@@ -458,7 +554,7 @@ class Book3D {
    * @param {number} p - Normalized progress [0, 1]
    * @param {number} dir - Direction (1 = forward right-to-left, -1 = backward left-to-right)
    */
-  deformTurningSheet(p, dir = 1) {
+  deformTurningSheet(p, dir = 1, front = this.turnFrontMesh, back = this.turnBackMesh, withShadow = true) {
     const W = this.pageW;
     const H = this.pageH;
     const Nu = this.sheetCols; // 48
@@ -466,10 +562,10 @@ class Book3D {
     const du = 1.0 / Nu;
     const segmentLen = du * W;
 
-    const frontPos = this.turnFrontMesh.geometry.attributes.position.array;
-    const backPos = this.turnBackMesh.geometry.attributes.position.array;
-    const frontNorm = this.turnFrontMesh.geometry.attributes.normal.array;
-    const backNorm = this.turnBackMesh.geometry.attributes.normal.array;
+    const frontPos = front.geometry.attributes.position.array;
+    const backPos = back.geometry.attributes.position.array;
+    const frontNorm = front.geometry.attributes.normal.array;
+    const backNorm = back.geometry.attributes.normal.array;
 
     const sinP = Math.sin(p * Math.PI);
     const rootP = p * p * (3 - 2 * p);
@@ -527,7 +623,8 @@ class Book3D {
         x += segmentLen * cosT;
         z += segmentLen * sinT;
 
-        const pz = Math.max(0.003, z);
+        // acompanha o arco das páginas para a folha não entrar por baixo delas
+        const pz = Math.max(0.003, z) + (this._arch || 0) * Math.sin(Math.PI * Math.sqrt(u)) + (this._arch ? 0.004 : 0);
         const yTaper = py * (1.0 - 0.012 * sinP * u);
 
         arrayIdx = vIdx * 3;
@@ -552,14 +649,14 @@ class Book3D {
       }
     }
 
-    this.turnFrontMesh.geometry.attributes.position.needsUpdate = true;
-    this.turnFrontMesh.geometry.attributes.normal.needsUpdate = true;
+    front.geometry.attributes.position.needsUpdate = true;
+    front.geometry.attributes.normal.needsUpdate = true;
 
-    this.turnBackMesh.geometry.attributes.position.needsUpdate = true;
-    this.turnBackMesh.geometry.attributes.normal.needsUpdate = true;
+    back.geometry.attributes.position.needsUpdate = true;
+    back.geometry.attributes.normal.needsUpdate = true;
 
     // Soft contact shadow underneath turning sheet
-    if (this.sheetShadow) {
+    if (withShadow && this.sheetShadow) {
       if (p > 0.02 && p < 0.98) {
         this.sheetShadow.visible = true;
         this.sheetShadowMat.opacity = sinP * 0.40;

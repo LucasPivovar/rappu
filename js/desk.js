@@ -141,7 +141,7 @@ class StudioEnvironment {
     this.scene.add(this.cupSun.target);
 
     // 6. Warm accent on the golden pencil
-    this.pencilGlint = new THREE.SpotLight(0xfff2dc, 1.4);
+    this.pencilGlint = new THREE.SpotLight(0xfff2dc, 0.35);
     this.pencilGlint.position.set(-8.5, 7.0, 3.5);
     this.pencilGlint.target.position.copy(this.pencilPos);
     this.pencilGlint.angle = 0.28;
@@ -645,10 +645,10 @@ class StudioEnvironment {
     const barrelTex = this.buildPencilBarrelTexture();
     const barrelMat = this.withEnv(new THREE.MeshPhysicalMaterial({
       map: barrelTex,
-      roughness: 0.28,
+      roughness: 0.62,
       metalness: 0.0,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.08,
+      clearcoat: 0.25,
+      clearcoatRoughness: 0.5,
       flatShading: true,
     }), 0.9);
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(R, R, barrelLen, 6, 1), barrelMat);
@@ -697,7 +697,7 @@ class StudioEnvironment {
     addF(ferruleR - 0.004, ferruleLen);
     addF(0.0, ferruleLen);
     const brassMat = this.withEnv(new THREE.MeshStandardMaterial({
-      color: 0xd8b56a,
+      color: 0x9c8455,
       roughness: 0.22,
       metalness: 1.0,
     }), 1.1);
@@ -708,7 +708,7 @@ class StudioEnvironment {
     axis.add(ferrule);
 
     const bandMat = this.withEnv(new THREE.MeshPhysicalMaterial({
-      color: 0x1f6b3f,
+      color: 0x2b2c31,
       roughness: 0.3,
       clearcoat: 1.0,
       clearcoatRoughness: 0.1,
@@ -728,7 +728,7 @@ class StudioEnvironment {
     ep.push(new THREE.Vector2(eraserR, eraserLen));
     ep.push(new THREE.Vector2(0.0, eraserLen));
     const eraserMat = this.withEnv(new THREE.MeshStandardMaterial({
-      color: 0xe7837e,
+      color: 0x3a3b40,
       roughness: 0.92,
       metalness: 0.0,
     }), 0.2);
@@ -749,15 +749,15 @@ class StudioEnvironment {
     c.height = H;
     const g = c.getContext('2d');
 
-    g.fillStyle = '#f2b707';
+    g.fillStyle = '#17181c';
     g.fillRect(0, 0, W, H);
 
     for (let k = 0; k < 6; k++) {
-      g.fillStyle = k % 2 ? 'rgba(255, 220, 90, 0.06)' : 'rgba(180, 110, 0, 0.05)';
+      g.fillStyle = k % 2 ? 'rgba(255, 255, 255, 0.035)' : 'rgba(0, 0, 0, 0.12)';
       g.fillRect((k * W) / 6, 0, W / 6, H);
     }
     for (let i = 0; i < 300; i++) {
-      g.fillStyle = `rgba(255, 245, 200, ${Math.random() * 0.05})`;
+      g.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.02})`;
       g.fillRect(Math.random() * W, 0, 1, H);
     }
 
@@ -768,7 +768,7 @@ class StudioEnvironment {
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.font = '700 46px "Plus Jakarta Sans", Arial, sans-serif';
-    g.fillStyle = '#1b5a35';
+    g.fillStyle = '#b89a5e';
     g.fillText('RAPPU  ✦  DRAFTING  No. 2  HB', 0, 0);
     g.restore();
 
